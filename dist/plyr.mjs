@@ -1438,7 +1438,8 @@ var resources = {
   airplay: 'AirPlay',
   html5: 'HTML5',
   vimeo: 'Vimeo',
-  youtube: 'YouTube'
+  youtube: 'YouTube',
+  dailymotion: 'DailyMotion'
 };
 var i18n = {
   get: function get() {
@@ -2497,19 +2498,19 @@ var controls = {
         if (!is.element(this.elements.settings.panels.loop)) {
             return;
         }
-         const options = ['start', 'end', 'all', 'reset'];
+          const options = ['start', 'end', 'all', 'reset'];
         const list = this.elements.settings.panels.loop.querySelector('[role="menu"]');
-         // Show the pane and tab
+          // Show the pane and tab
         toggleHidden(this.elements.settings.buttons.loop, false);
         toggleHidden(this.elements.settings.panels.loop, false);
-         // Toggle the pane and tab
+          // Toggle the pane and tab
         const toggle = !is.empty(this.loop.options);
         controls.toggleMenuButton.call(this, 'loop', toggle);
-         // Empty the menu
+          // Empty the menu
         emptyElement(list);
-         options.forEach(option => {
+          options.forEach(option => {
             const item = createElement('li');
-             const button = createElement(
+              const button = createElement(
                 'button',
                 extend(getAttributesFromSelector(this.config.selectors.buttons.loop), {
                     type: 'button',
@@ -2518,11 +2519,11 @@ var controls = {
                 }),
                 i18n.get(option, this.config)
             );
-             if (['start', 'end'].includes(option)) {
+              if (['start', 'end'].includes(option)) {
                 const badge = controls.createBadge.call(this, '00:00');
                 button.appendChild(badge);
             }
-             item.appendChild(button);
+              item.appendChild(button);
             list.appendChild(item);
         });
     }, */
@@ -3228,7 +3229,7 @@ var captions = {
     } // Only Vimeo and HTML5 video supported at this point
 
 
-    if (!this.isVideo || this.isYouTube || this.isHTML5 && !support.textTracks) {
+    if (!this.isVideo || this.isYouTube || this.isDailyMotion || this.isHTML5 && !support.textTracks) {
       // Clear menu and hide
       if (is$1.array(this.config.controls) && this.config.controls.includes('settings') && this.config.settings.includes('captions')) {
         controls.setCaptionsMenu.call(this);
@@ -3772,6 +3773,10 @@ var defaults$1 = {
       sdk: 'https://www.youtube.com/iframe_api',
       api: 'https://noembed.com/embed?url=https://www.youtube.com/watch?v={0}'
     },
+    dailymotion: {
+      sdk: 'https://api.dmcdn.net/all.js',
+      api: 'https://api.dailymotion.com/video/{0}?fields=aspect_ratio,duration,embed_url,height,thumbnail_1080_url,width,title'
+    },
     googleIMA: {
       sdk: 'https://imasdk.googleapis.com/js/sdkloader/ima3.js'
     }
@@ -3955,6 +3960,21 @@ var defaults$1 = {
     // Hide annotations
     modestbranding: 1 // Hide logos as much as possible (they still show one in the corner when paused)
 
+  },
+  // DailyMotion plugin
+  dailymotion: {
+    api: 'postMessage',
+    // Enable the Player API https://developer.dailymotion.com/player/#player-parameters
+    'autoplay-mute': false,
+    // Try to autoplay while muting the video if autoplay didn't work
+    syndication: '',
+    // Syndication key for the player
+    'ui-logo': false,
+    // Hide the dailymotion logo
+    'ui-start-screen-info': false,
+    // Hide video information (title and owner) on the start screen
+    apimode: 'queryString' // How to encode/decode messages sent from the player. https://developer.dailymotion.com/player/#player-parameters
+
   }
 };
 
@@ -3972,7 +3992,8 @@ var pip = {
 var providers = {
   html5: 'html5',
   youtube: 'youtube',
-  vimeo: 'vimeo'
+  vimeo: 'vimeo',
+  dailymotion: 'dailymotion'
 };
 var types = {
   audio: 'audio',
@@ -3992,6 +4013,11 @@ function getProviderByUrl(url) {
 
   if (/^https?:\/\/player.vimeo.com\/video\/\d{0,9}(?=\b|\/)/.test(url)) {
     return providers.vimeo;
+  } // DailyMotion
+
+
+  if (/^(https?:\/\/)?(www\.)?(dailymotion\.com|dai\.ly)\/.+$/.test(url)) {
+    return providers.dailymotion;
   }
 
   return null;
@@ -5668,7 +5694,276 @@ function loadScript(url) {
   });
 }
 
+// ==========================================================================
+
 function parseId(url) {
+  if (is$1.empty(url)) {
+    return null;
+  }
+
+  if (is$1.number(Number(url))) {
+    return url;
+  }
+
+  var regex = /^.*(dai.ly\/|dailymotion.com\/|video\/)(\w+).*/;
+  return url.match(regex) ? RegExp.$2 : url;
+} // Set playback state and trigger change (only on actual change)
+
+
+function assurePlaybackState(play) {
+  if (play && !this.embed.hasPlayed) {
+    this.embed.hasPlayed = true;
+  }
+
+  if (this.media.paused === play) {
+    this.media.paused = !play;
+    triggerEvent.call(this, this.media, play ? 'play' : 'pause');
+  }
+}
+
+var dailymotion = {
+  setup: function setup() {
+    var player = this; // Add embed class for responsive
+
+    toggleClass(player.elements.wrapper, player.config.classNames.embed, true); // Can't set speed for dailymotion
+
+    player.options.speed = [1]; // Set intial ratio
+
+    setAspectRatio.call(player); // Load the SDK if not already
+
+    if (is$1.object(window.DM) && is$1.function(window.DM.player)) {
+      dailymotion.ready.call(player);
+    } else {
+      loadScript(player.config.urls.dailymotion.sdk).then(function () {
+        dailymotion.ready.call(player);
+      }).catch(function (error) {
+        player.debug.warn('DailyMotion SDK (all.js) failed to load', error);
+      });
+    }
+  },
+  // API Ready
+  ready: function ready() {
+    // Following previous plugin procedure
+    var player = this; // Getting dailymotion config
+
+    var config = player.config.dailymotion; // Get the source URL or ID if it's an <iframe />
+
+    var source = player.media.getAttribute('src'); // Get from <div> if needed
+
+    if (is$1.empty(source)) {
+      source = player.media.getAttribute(this.config.attributes.embed.id);
+    }
+
+    var videoId = parseId(source); // Get poster, if already set
+
+    var poster = player.poster; // This div will be replaced by an iframe by DM.player
+
+    var container = createElement('div'); // We need to keep the previous element to implement the destroy method and keep the same behaviour as Youtube and Vimeo
+
+    var previousElement = player.media.cloneNode();
+    player.media = replaceElement(container, player.media); // Get poster image
+
+    fetch(format(player.config.urls.dailymotion.api, videoId), 'json').then(function (response) {
+      if (is$1.empty(response)) {
+        return;
+      } // Set Title
+
+
+      player.config.title = response.title;
+      ui.setTitle.call(player); // Set aspect ratio
+
+      player.embed.ratio = [response.width, response.height]; // Set and show poster
+
+      ui.setPoster.call(player, response.thumbnail_1080_url).catch(function () {});
+      setAspectRatio.call(player);
+    }).catch(function () {
+      setAspectRatio(player);
+    }); // Setup instance
+    // https://developer.dailymotion.com/tools/sdks#sdk-javascript-player-api
+
+    player.embed = window.DM.player(container, {
+      video: videoId,
+      params: extend({}, {
+        autoplay: player.config.autoplay,
+        // Autoplay
+        controls: !player.supported.ui,
+        mute: player.config.muted,
+        origin: window.location.hostname,
+        'subtitles-default': player.config.captions.language
+      }, config)
+    });
+    container.setAttribute('data-poster', poster);
+
+    player.embed.destroy = function () {
+      player.media = replaceElement(previousElement, player.media);
+    };
+
+    player.media.paused = true;
+    player.embed.addEventListener('apiready', function () {
+      // Set the tabindex to avoid focus entering iframe
+      if (player.supported.ui) {
+        player.media.setAttribute('tabindex', -1);
+      }
+
+      player.media.currentTime = 0;
+      player.media.duration = player.embed.duration;
+      triggerEvent.call(player, player.media, 'timeupdate');
+      triggerEvent.call(player, player.media, 'durationchange'); // Create a faux HTML5 API using the DailyMotion API
+
+      /*
+       * Methods
+       */
+
+      player.media.play = function () {
+        assurePlaybackState.call(player, true);
+        return player.embed.play();
+      };
+
+      player.media.pause = function () {
+        assurePlaybackState.call(player, false);
+        return player.embed.pause();
+      };
+
+      player.media.stop = function () {
+        player.embed.pause();
+        player.embed.seek(0);
+      };
+      /*
+       * Properties
+       */
+
+
+      var currentTime = player.embed.currentTime; // Seeking
+
+      Object.defineProperty(player.media, 'currentTime', {
+        get: function get() {
+          return currentTime;
+        },
+        set: function set(time) {
+          // If paused and never played, mute audio preventively
+          if (player.paused && !player.embed.hasPlayed) {
+            player.embed.setMuted(true);
+          } // Set seeking state and trigger event
+
+
+          player.media.seeking = true;
+          triggerEvent.call(player, player.media, 'seeking'); // Seek after events sent
+
+          player.embed.seek(time);
+
+          if (player.paused && !player.embed.hasPlayed) {
+            player.pause();
+            player.embed.setMuted(false);
+          }
+        }
+      }); // Volume
+
+      var volume = player.config.volume;
+      Object.defineProperty(player.media, 'volume', {
+        get: function get() {
+          return volume;
+        },
+        set: function set(input) {
+          player.embed.setVolume(input);
+          volume = input;
+          triggerEvent.call(player, player.media, 'volumechange');
+        }
+      }); // Muted
+
+      var muted = player.config.muted;
+      Object.defineProperty(player.media, 'muted', {
+        get: function get() {
+          return muted;
+        },
+        set: function set(input) {
+          var toggle = is$1.boolean(input) ? input : false;
+          muted = toggle;
+          player.embed.setMuted(toggle);
+          triggerEvent.call(player, player.media, 'volumechange');
+        }
+      }); // DailyMotion doesn't provide the source
+
+      Object.defineProperty(player.media, 'currentSrc', {
+        get: function get() {
+          return '';
+        }
+      }); // Ended
+
+      Object.defineProperty(player.media, 'ended', {
+        get: function get() {
+          return player.embed.ended;
+        }
+      });
+      /*
+       * Events Listeners
+       */
+
+      player.embed.addEventListener('error', function () {
+        // DailyMotion may fire onError twice, so only handle it once
+        if (!player.media.error) {
+          var _player$embed$error = player.embed.error,
+              code = _player$embed$error.code,
+              message = _player$embed$error.message;
+          player.media.error = {
+            code: code,
+            message: message
+          };
+          triggerEvent.call(player, player.media, 'error');
+        }
+      });
+      player.embed.addEventListener('play', function () {
+        assurePlaybackState.call(player, true);
+        triggerEvent.call(player, player.media, 'playing');
+      });
+      player.embed.addEventListener('pause', function () {
+        assurePlaybackState.call(player, false);
+      });
+      player.embed.addEventListener('durationchange', function () {
+        player.media.duration = player.embed.duration;
+        triggerEvent.call(player, player.media, 'durationchange');
+      });
+      player.embed.addEventListener('timeupdate', function () {
+        player.media.seeking = false;
+        currentTime = player.embed.currentTime;
+        triggerEvent.call(player, player.media, 'timeupdate');
+      });
+      player.embed.addEventListener('progress', function () {
+        var buffered = player.embed.bufferedTime / player.embed.duration; // percent [0; 1]
+
+        player.media.buffered = buffered;
+        triggerEvent.call(player, player.media, 'progress'); // Check all loaded
+
+        if (parseInt(buffered, 10) === 1) {
+          triggerEvent.call(player, player.media, 'canplaythrough');
+        }
+      });
+      player.embed.addEventListener('seeked', function () {
+        player.media.seeking = false;
+        triggerEvent.call(player, player.media, 'seeked');
+      });
+      player.embed.addEventListener('ended', function () {
+        assurePlaybackState.call(player, false); // DailyMotion doesn't support loop for a single video, so mimick it.
+
+        if (player.media.loop) {
+          // DailyMotion needs a call to `stop` before playing again
+          player.media.stop();
+          player.media.play();
+        } else {
+          triggerEvent.call(player, player.media, 'ended');
+        }
+      });
+      player.embed.addEventListener('waiting', function () {
+        triggerEvent.call(player, player.media, 'waiting');
+      }); // Rebuild UI
+
+      setTimeout(function () {
+        return ui.build.call(player);
+      }, 50);
+    });
+  }
+};
+
+function parseId$1(url) {
   if (is$1.empty(url)) {
     return null;
   }
@@ -5682,7 +5977,7 @@ function parseId(url) {
 } // Set playback state and trigger change (only on actual change)
 
 
-function assurePlaybackState(play) {
+function assurePlaybackState$1(play) {
   if (play && !this.embed.hasPlayed) {
     this.embed.hasPlayed = true;
   }
@@ -5747,7 +6042,7 @@ var vimeo = {
       source = player.media.getAttribute(player.config.attributes.embed.id);
     }
 
-    var id = parseId(source); // Build an iframe
+    var id = parseId$1(source); // Build an iframe
 
     var iframe = createElement('iframe');
     var src = format(player.config.urls.vimeo.iframe, id, params);
@@ -5802,12 +6097,12 @@ var vimeo = {
 
 
     player.media.play = function () {
-      assurePlaybackState.call(player, true);
+      assurePlaybackState$1.call(player, true);
       return player.embed.play();
     };
 
     player.media.pause = function () {
-      assurePlaybackState.call(player, false);
+      assurePlaybackState$1.call(player, false);
       return player.embed.pause();
     };
 
@@ -5966,7 +6261,7 @@ var vimeo = {
     player.embed.on('loaded', function () {
       // Assure state and events are updated on autoplay
       player.embed.getPaused().then(function (paused) {
-        assurePlaybackState.call(player, !paused);
+        assurePlaybackState$1.call(player, !paused);
 
         if (!paused) {
           triggerEvent.call(player, player.media, 'playing');
@@ -5987,11 +6282,11 @@ var vimeo = {
       triggerEvent.call(player, player.media, 'playing');
     });
     player.embed.on('play', function () {
-      assurePlaybackState.call(player, true);
+      assurePlaybackState$1.call(player, true);
       triggerEvent.call(player, player.media, 'playing');
     });
     player.embed.on('pause', function () {
-      assurePlaybackState.call(player, false);
+      assurePlaybackState$1.call(player, false);
     });
     player.embed.on('timeupdate', function (data) {
       player.media.seeking = false;
@@ -6036,7 +6331,7 @@ var vimeo = {
 
 // ==========================================================================
 
-function parseId$1(url) {
+function parseId$2(url) {
   if (is$1.empty(url)) {
     return null;
   }
@@ -6046,7 +6341,7 @@ function parseId$1(url) {
 } // Set playback state and trigger change (only on actual change)
 
 
-function assurePlaybackState$1(play) {
+function assurePlaybackState$2(play) {
   if (play && !this.embed.hasPlayed) {
     this.embed.hasPlayed = true;
   }
@@ -6139,7 +6434,7 @@ var youtube = {
     } // Replace the <iframe> with a <div> due to YouTube API issues
 
 
-    var videoId = parseId$1(source);
+    var videoId = parseId$2(source);
     var id = generateId(player.provider); // Get poster, if already set
 
     var poster = player.poster; // Replace media element
@@ -6232,12 +6527,12 @@ var youtube = {
           youtube.getTitle.call(player, videoId); // Create a faux HTML5 API using the YouTube API
 
           player.media.play = function () {
-            assurePlaybackState$1.call(player, true);
+            assurePlaybackState$2.call(player, true);
             instance.playVideo();
           };
 
           player.media.pause = function () {
-            assurePlaybackState$1.call(player, false);
+            assurePlaybackState$2.call(player, false);
             instance.pauseVideo();
           };
 
@@ -6380,7 +6675,7 @@ var youtube = {
               break;
 
             case 0:
-              assurePlaybackState$1.call(player, false); // YouTube doesn't support loop for a single video, so mimick it.
+              assurePlaybackState$2.call(player, false); // YouTube doesn't support loop for a single video, so mimick it.
 
               if (player.media.loop) {
                 // YouTube needs a call to `stopVideo` before playing again
@@ -6397,7 +6692,7 @@ var youtube = {
               if (!player.config.autoplay && player.media.paused && !player.embed.hasPlayed) {
                 player.media.pause();
               } else {
-                assurePlaybackState$1.call(player, true);
+                assurePlaybackState$2.call(player, true);
                 triggerEvent.call(player, player.media, 'playing'); // Poll to get playback progress
 
                 player.timers.playing = setInterval(function () {
@@ -6420,7 +6715,7 @@ var youtube = {
                 player.embed.unMute();
               }
 
-              assurePlaybackState$1.call(player, false);
+              assurePlaybackState$2.call(player, false);
               break;
 
             case 3:
@@ -6479,6 +6774,8 @@ var media = {
       youtube.setup.call(this);
     } else if (this.isVimeo) {
       vimeo.setup.call(this);
+    } else if (this.isDailyMotion) {
+      dailymotion.setup.call(this);
     }
   }
 };
@@ -8139,7 +8436,7 @@ var Plyr = /*#__PURE__*/function () {
     var clone = this.media.cloneNode(true);
     clone.autoplay = false;
     this.elements.original = clone; // Set media type based on tag or data attribute
-    // Supported: video, audio, vimeo, youtube
+    // Supported: video, audio, vimeo, youtube, dailymotion
 
     var type = this.media.tagName.toLowerCase(); // Embed properties
 
@@ -8628,6 +8925,14 @@ var Plyr = /*#__PURE__*/function () {
 
 
         setTimeout(done, 200);
+      } else if (this.isDailyMotion) {
+        // Destroy DailyMotion made function
+        if (this.embed !== null && is$1.function(this.embed.destroy)) {
+          this.embed.destroy();
+        } // Clean up
+
+
+        done();
       }
     }
     /**
@@ -8643,7 +8948,7 @@ var Plyr = /*#__PURE__*/function () {
     /**
      * Check for support
      * @param {String} type - Player type (audio/video)
-     * @param {String} provider - Provider (html5/youtube/vimeo)
+     * @param {String} provider - Provider (html5/youtube/vimeo/dailymotion)
      * @param {Boolean} inline - Where player has `playsinline` sttribute
      */
 
@@ -8655,7 +8960,7 @@ var Plyr = /*#__PURE__*/function () {
   }, {
     key: "isEmbed",
     get: function get() {
-      return this.isYouTube || this.isVimeo;
+      return this.isYouTube || this.isVimeo || this.isDailyMotion;
     }
   }, {
     key: "isYouTube",
@@ -8666,6 +8971,11 @@ var Plyr = /*#__PURE__*/function () {
     key: "isVimeo",
     get: function get() {
       return this.provider === providers.vimeo;
+    }
+  }, {
+    key: "isDailyMotion",
+    get: function get() {
+      return this.provider === providers.dailymotion;
     }
   }, {
     key: "isVideo",
@@ -8738,7 +9048,7 @@ var Plyr = /*#__PURE__*/function () {
   }, {
     key: "buffered",
     get: function get() {
-      var buffered = this.media.buffered; // YouTube / Vimeo return a float between 0-1
+      var buffered = this.media.buffered; // YouTube / Vimeo / DailyMotion return a float between 0-1
 
       if (is$1.number(buffered)) {
         return buffered;
@@ -8931,6 +9241,11 @@ var Plyr = /*#__PURE__*/function () {
       if (this.isVimeo) {
         // https://github.com/vimeo/player.js/#setplaybackrateplaybackrate-number-promisenumber-rangeerrorerror
         return 0.5;
+      }
+
+      if (this.isDailyMotion) {
+        // No playback rate support
+        return 1;
       } // https://stackoverflow.com/a/32320020/1191319
 
 
@@ -8951,6 +9266,11 @@ var Plyr = /*#__PURE__*/function () {
       if (this.isVimeo) {
         // https://github.com/vimeo/player.js/#setplaybackrateplaybackrate-number-promisenumber-rangeerrorerror
         return 2;
+      }
+
+      if (this.isDailyMotion) {
+        // No Playback rate support
+        return 1;
       } // https://stackoverflow.com/a/32320020/1191319
 
 
@@ -9015,7 +9335,7 @@ var Plyr = /*#__PURE__*/function () {
       this.media.loop = toggle; // Set default to be a true toggle
 
       /* const type = ['start', 'end', 'all', 'none', 'toggle'].includes(input) ? input : 'toggle';
-           switch (type) {
+            switch (type) {
               case 'start':
                   if (this.config.loop.end && this.config.loop.end <= this.currentTime) {
                       this.config.loop.end = null;
@@ -9023,20 +9343,20 @@ var Plyr = /*#__PURE__*/function () {
                   this.config.loop.start = this.currentTime;
                   // this.config.loop.indicator.start = this.elements.display.played.value;
                   break;
-               case 'end':
+                case 'end':
                   if (this.config.loop.start >= this.currentTime) {
                       return this;
                   }
                   this.config.loop.end = this.currentTime;
                   // this.config.loop.indicator.end = this.elements.display.played.value;
                   break;
-               case 'all':
+                case 'all':
                   this.config.loop.start = 0;
                   this.config.loop.end = this.duration - 2;
                   this.config.loop.indicator.start = 0;
                   this.config.loop.indicator.end = 100;
                   break;
-               case 'toggle':
+                case 'toggle':
                   if (this.config.loop.active) {
                       this.config.loop.start = 0;
                       this.config.loop.end = null;
@@ -9045,7 +9365,7 @@ var Plyr = /*#__PURE__*/function () {
                       this.config.loop.end = this.duration - 2;
                   }
                   break;
-               default:
+                default:
                   this.config.loop.start = 0;
                   this.config.loop.end = null;
                   break;
